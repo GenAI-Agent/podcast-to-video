@@ -1,0 +1,11 @@
+pinecone
+sentence-transformers
+librosa
+soundfile
+numpy
+torch
+transformers
+langchain-openai
+langchain-core
+python-dotenv
+requests

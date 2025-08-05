@@ -1,0 +1,7 @@
+/data
+*.json
+*.mp4
+__pycache__
+.DS_Store
+.env
+__init__.py
