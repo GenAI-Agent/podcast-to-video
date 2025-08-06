@@ -31,7 +31,9 @@ from src.database.pinecone_handler import PineconeHandler
 # Load environment variables
 load_dotenv()
 transcript_prompt = """
-    You are a professional video speech writer. Based on the provided article, directly give me a speech draft of about 1 minute in length. The content should be concise, engaging, and suitable for spoken video narration. Keep the original language of the article (Chinese or English); do not translate.
+    You are a professional video speech writer. Based on the provided article, directly give me a speech draft of about 1 minute in length. The content should be concise, engaging, and suitable for spoken video narration.
+    Keep the original language of the article (Chinese or English); do not translate.
+    But when you use Chinese, you can only use Traditional Chinese.
 """
 transcript_user_prompt = """
     Based on the following article, directly give me a 1-minute video speech draft:
@@ -39,6 +41,8 @@ transcript_user_prompt = """
     {article}
 
     Only provide the speech draft, do not include any other explanations.
+    Dont include any other text or symbols in your response.
+    
 """
 image_prompt = """
     You are a professional video director. Based on the provided transcript and audio duration, generate a script with image descriptions and durations.
@@ -81,8 +85,8 @@ image_user_prompt = """
 class VideoGenerator:
     def __init__(self):
         """Initialize the video generator"""
-        # self.temp_dir = tempfile.mkdtemp()
-        self.temp_dir = "temp"
+        self.temp_dir = tempfile.mkdtemp()
+        # self.temp_dir = "temp"
         self.pinecone_handler = PineconeHandler()
 
     def generate_transcript_from_article(self, article: str) -> str:
@@ -147,9 +151,9 @@ class VideoGenerator:
         sentences = re.split(r"[.!?。！？]+", article)
         sentences = [s.strip() for s in sentences if s.strip()]
 
-        # Further split sentences to ensure max 14 characters
+        # Further split sentences to ensure max 25 characters
         final_sentences = []
-        max_chars = 14  # Maximum 14 characters per sentence
+        max_chars = 25  # Maximum 25 characters per sentence
 
         for sentence in sentences:
             # Keep the sentence as is initially, don't strip punctuation yet
@@ -159,7 +163,7 @@ class VideoGenerator:
                 if sentence:  # Only add non-empty sentences
                     final_sentences.append(sentence)
             else:
-                # Split long sentences into chunks of max 14 characters
+                # Split long sentences into chunks of max 25 characters
                 # Try to split at natural word boundaries while preserving paired punctuation
                 words = sentence.split()
                 current_chunk = ""
@@ -646,6 +650,7 @@ class VideoGenerator:
 
             # Voice configuration - using JBFqnCBsd6RMkjVDRZzb as in your example
             voice_id = "JBFqnCBsd6RMkjVDRZzb"
+            # voice_id = "fQj4gJSexpu8RDE2Ii5m"
 
             print(
                 f"Generating audio with ElevenLabs API (text length: {len(text)} chars)..."
@@ -749,23 +754,6 @@ class VideoGenerator:
         elif text_for_generation:
             print("Generating audio from text using API...")
             return self.generate_audio_from_api(text_for_generation)
-
-        # Fallback to sample audio file
-        else:
-            sample_audio = "data/media/raymond_bridge.mp3"
-
-            if not os.path.exists(sample_audio):
-                raise FileNotFoundError(f"Sample audio file not found: {sample_audio}")
-
-            print(f"Using fallback sample audio: {sample_audio}")
-            # Get audio duration
-            duration = librosa.get_duration(path=sample_audio)
-
-            # Copy to temp directory
-            temp_audio_path = os.path.join(self.temp_dir, "audio.mp3")
-            subprocess.run(["cp", sample_audio, temp_audio_path], check=True)
-
-            return temp_audio_path, duration
 
     def vector_search_images(
         self, descriptions: List[str], top_k: int = 5
@@ -902,17 +890,23 @@ class VideoGenerator:
                 # Convert Windows path to WSL path
                 wsl_path = self.convert_windows_path_to_wsl(img)
                 if os.path.exists(wsl_path):
-                    valid_images.append(wsl_path)
-                    print(f"✓ Found image: {wsl_path}")
+                    # Ensure absolute path for FFmpeg
+                    abs_path = os.path.abspath(wsl_path)
+                    valid_images.append(abs_path)
+                    print(f"✓ Found image: {abs_path}")
                 else:
                     print(f"⚠ Original image not found: {wsl_path}")
                     # Try to find a unique fallback image in the same directory
                     fallback = self.find_fallback_image(img, used_fallbacks)
                     if fallback:
-                        valid_images.append(fallback)
-                        print(f"✓ Using fallback instead")
+                        abs_fallback = os.path.abspath(fallback)
+                        valid_images.append(abs_fallback)
+                        print(f"✓ Using fallback instead: {abs_fallback}")
                     else:
                         print(f"✗ No fallback found for: {img}")
+
+        if not valid_images:
+            raise ValueError("No valid images found for video generation")
 
         # Create image list file for FFmpeg
         # Use the duration from audio generation step to ensure consistency
@@ -953,9 +947,10 @@ class VideoGenerator:
             "aac",
             "-pix_fmt",
             "yuv420p",
-            "-shortest",
+            "-t",
+            str(audio_duration),  # Limit video to audio duration
             "-vf",
-            f"scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+            f"scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2", # resize to 1920x1080
             temp_video_path,
         ]
 
@@ -970,7 +965,7 @@ class VideoGenerator:
             "-i",
             temp_video_path,
             "-vf",
-            f"subtitles={srt_path}:force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2'",
+            f"subtitles={srt_path}:force_style='FontSize=18,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2'",
             "-c:a",
             "copy",
             video_with_subs,
@@ -980,15 +975,15 @@ class VideoGenerator:
 
         # Add ending video (check local directory first)
         local_ending_video = os.path.join(os.getcwd(), "data/media/LensCover.mp4")
-        windows_ending_video = r"C:\Users\x7048\Documents\VideoMaker\LensCover.mp4"
+        wsl_ending_video = "/mnt/c/Users/x7048/Documents/VideoMaker/LensCover.mp4"
 
         ending_video = None
         if os.path.exists(local_ending_video):
             ending_video = local_ending_video
             print(f"✓ Using local ending video: {local_ending_video}")
-        elif os.path.exists(windows_ending_video):
-            ending_video = windows_ending_video
-            print(f"✓ Using Windows ending video: {windows_ending_video}")
+        elif os.path.exists(wsl_ending_video):
+            ending_video = wsl_ending_video
+            print(f"✓ Using WSL ending video: {wsl_ending_video}")
         else:
             print("⚠ No ending video found")
 
@@ -1070,20 +1065,57 @@ class VideoGenerator:
                 image_paths, audio_path, srt_path, output_path, audio_duration
             )
 
+        # Filter and process image paths
+        valid_images = []
+        used_fallbacks = set()
+        
+        for img in image_paths:
+            if img:
+                # Convert Windows path to WSL path and ensure absolute path
+                wsl_path = self.convert_windows_path_to_wsl(img)
+                if os.path.exists(wsl_path):
+                    abs_path = os.path.abspath(wsl_path)
+                    valid_images.append(abs_path)
+                    print(f"✓ Found image: {abs_path}")
+                else:
+                    print(f"⚠ Original image not found: {wsl_path}")
+                    fallback = self.find_fallback_image(img, used_fallbacks)
+                    if fallback:
+                        abs_fallback = os.path.abspath(fallback)
+                        valid_images.append(abs_fallback)
+                        print(f"✓ Using fallback instead: {abs_fallback}")
+                    else:
+                        print(f"✗ No fallback found for: {img}")
+                        valid_images.append(None)
+            else:
+                valid_images.append(None)
+        
+        # Filter out None values
+        valid_script_pairs = [(img, script) for img, script in zip(valid_images, image_script) if img is not None]
+        
+        if not valid_script_pairs:
+            raise ValueError("No valid images found for video generation")
+
         # Create image list file with specific durations
         image_list_path = os.path.join(self.temp_dir, "images_with_durations.txt")
+        total_image_duration = 0
         with open(image_list_path, "w") as f:
-            for i, (img_path, script_item) in enumerate(zip(image_paths, image_script)):
+            for i, (img_path, script_item) in enumerate(valid_script_pairs):
                 duration = script_item["duration"]
+                total_image_duration += duration
                 f.write(f"file '{img_path}'\n")
                 f.write(f"duration {duration}\n")
-                # Add the image again without duration for the last frame
-                if i == len(image_paths) - 1:
-                    f.write(f"file '{img_path}'\n")
+            # Add the last image without duration to ensure proper ending
+            if valid_script_pairs:
+                f.write(f"file '{valid_script_pairs[-1][0]}'\n")
 
         print(
-            f"📊 Video timing: {len(image_paths)} images with custom durations, total {audio_duration:.1f}s"
+            f"📊 Video timing: {len(valid_script_pairs)} images with custom durations"
         )
+        print(f"📊 Image total duration: {total_image_duration:.2f}s")
+        print(f"📊 Audio duration: {audio_duration:.2f}s")
+        if abs(total_image_duration - audio_duration) > 0.1:
+            print(f"⚠️  Duration mismatch: {abs(total_image_duration - audio_duration):.2f}s difference")
 
         # Create main video from images with custom durations
         temp_video_path = os.path.join(self.temp_dir, "temp_video.mp4")
@@ -1105,7 +1137,8 @@ class VideoGenerator:
             "aac",
             "-pix_fmt",
             "yuv420p",
-            "-shortest",
+            "-t",
+            str(audio_duration),  # Limit video to audio duration
             "-vf",
             f"scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
             temp_video_path,
@@ -1122,7 +1155,7 @@ class VideoGenerator:
             "-i",
             temp_video_path,
             "-vf",
-            f"subtitles={srt_path}:force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2'",
+            f"subtitles={srt_path}:force_style='FontSize=18,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2'",
             "-c:a",
             "copy",
             video_with_subs,
@@ -1132,15 +1165,15 @@ class VideoGenerator:
 
         # Add ending video (same logic as original)
         local_ending_video = os.path.join(os.getcwd(), "data/media/LensCover.mp4")
-        windows_ending_video = r"C:\Users\x7048\Documents\VideoMaker\LensCover.mp4"
+        wsl_ending_video = "/mnt/c/Users/x7048/Documents/VideoMaker/LensCover.mp4"
 
         ending_video = None
         if os.path.exists(local_ending_video):
             ending_video = local_ending_video
             print(f"✓ Using local ending video: {local_ending_video}")
-        elif os.path.exists(windows_ending_video):
-            ending_video = windows_ending_video
-            print(f"✓ Using Windows ending video: {windows_ending_video}")
+        elif os.path.exists(wsl_ending_video):
+            ending_video = wsl_ending_video
+            print(f"✓ Using WSL ending video: {wsl_ending_video}")
         else:
             print("⚠ No ending video found")
 
@@ -1350,8 +1383,8 @@ def main():
     才能在快速變化的金融市場中保持競爭力。
     """
     fixed_article = """
-    Today’s portfolio underperformance reflects a temporary misalignment between expectations and realized earnings momentum across our cyclical long positions. CCL (-2.35%) and FDX (-2.86%) underperformed broader market declines (-1.64%), underscoring their sensitivity to short-term demand fluctuations. ORLY’s modest gain (+0.81%) provided limited balance, while PNW (+0.07%), our defensive short, failed to deliver sufficient downside protection due to stagnant movement in utility valuations. This highlights the importance of refining risk-parity mechanisms to manage unhedged exposure during volatile macro conditions.
-    The strategy continues to exhibit strong long-term performance metrics—241.70% annualized returns with a Sharpe ratio of 16.48—validating our systematic approach. However, today’s results emphasize that even high-probability strategies face episodic dislocations, particularly when assumption-driven trades encounter unexpected macroeconomic noise. Consistent diversification beyond cyclical sectors will be critical to reduce drawdowns and sustain our edge.
+    Today's portfolio underperformance reflects a temporary misalignment between expectations and realized earnings momentum across our cyclical long positions. CCL (-2.35%) and FDX (-2.86%) underperformed broader market declines (-1.64%), underscoring their sensitivity to short-term demand fluctuations. ORLY's modest gain (+0.81%) provided limited balance, while PNW (+0.07%), our defensive short, failed to deliver sufficient downside protection due to stagnant movement in utility valuations. This highlights the importance of refining risk-parity mechanisms to manage unhedged exposure during volatile macro conditions.
+    The strategy continues to exhibit strong long-term performance metrics—241.70% annualized returns with a Sharpe ratio of 16.48—validating our systematic approach. However, today's results emphasize that even high-probability strategies face episodic dislocations, particularly when assumption-driven trades encounter unexpected macroeconomic noise. Consistent diversification beyond cyclical sectors will be critical to reduce drawdowns and sustain our edge.
     The current market environment remains stable but fragile, with growth-oriented cyclicals facing decelerating post-recovery momentum. Continued earnings revisions and analyst expectation gaps within consumer-sensitive sectors suggest opportunity, but these must be weighed against mounting uncertainty in macro policy signals and demand elasticity. A more robust hedge across non-cyclical, defensive sectors may enhance resilience.
     Our holdings reflect a deliberate focus on earnings revision momentum and analyst expectation gaps. Long positions in CCL and FDX are based on anticipated topline recovery tied to macro reopening tailwinds, while ORLY brings strong fundamental relative valuation. PNW, our short, challenges overvalued defensive utilities, balancing exposure. These decisions are rooted in systematic valuation frameworks, though current execution reveals gaps in macro overlay calibration.
     As always, designing around the system requires constant iteration. Most risks lie in assumptions we mistakenly deem certain—a principle that today reinforces. Diversification remains the only true free lunch.
@@ -1361,22 +1394,35 @@ def main():
     generator = VideoGenerator()
 
     try:
-        custom_audio = "data/media/somer_smaple.wav"
+        # custom_audio = "data/media/somer_smaple.wav"
         # Example 1: Generate audio from text using API
         print("=== Example 1: Generate audio from text ===")
         output_file = generator.generate_video_from_article(
-            web_link="https://www.taaze.tw/products/11101058474.html",
+            # web_link="https://www.taaze.tw/products/11101058474.html",
+            article=fixed_article,
             use_gpt_transcript=True,
-            output_path="sample_video_generated_audio.mp4",
+            output_path="pre-market.mp4",
             custom_srt_path=None,
-            custom_audio_path=custom_audio,  # Will use API to generate audio
+            custom_audio_path=None,  # Will use API to generate audio
         )
         print(f"Success! Video with generated audio saved to: {output_file}")
 
-        # Example 2: Use custom audio file (if available)
+        # print("=== Example 2: Generate audio from text ===")
+        # output_file = generator.generate_video_from_article(
+        #     web_link="https://www.taaze.tw/products/11101058474.html",
+        #     # article=fixed_article,
+        #     use_gpt_transcript=True,
+        #     output_path="book_video.mp4",
+        #     custom_srt_path=None,
+        #     custom_audio_path=None,  # Will use API to generate audio
+        # )
+        # print(f"Success! Video with generated audio saved to: {output_file}")
+
+
+        # Example 3: Use custom audio file (if available)
         # custom_audio = "data/media/raymond_bridge8-3.mp3"
         # if os.path.exists(custom_audio):
-        #     print("\n=== Example 2: Use custom audio file ===")
+        #     print("\n=== Example 3: Use custom audio file ===")
         #     output_file_2 = generator.generate_video_from_article(
         #         article=fixed_article,
         #         output_path="raymond_bridge11.mp4",

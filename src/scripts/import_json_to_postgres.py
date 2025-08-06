@@ -22,7 +22,7 @@ def process_json_files_from_root():
     and import them to PostgreSQL
     """
     # Find all JSON files in root directory matching the pattern
-    json_files = glob.glob(str(project_root / "batch_image_data_*_final.json"))
+    json_files = glob.glob(str(project_root / "*_final.json"))
     
     if not json_files:
         print("No JSON files found in root directory")
