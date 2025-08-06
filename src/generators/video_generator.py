@@ -11,7 +11,6 @@ import subprocess
 import tempfile
 import requests
 from typing import List, Tuple, Optional
-from sentence_transformers import SentenceTransformer
 import librosa
 from langchain_openai import AzureChatOpenAI    
 from langchain_core.prompts import ChatPromptTemplate
@@ -30,7 +29,6 @@ load_dotenv()
 class VideoGenerator:
     def __init__(self):
         """Initialize the video generator"""
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
         self.temp_dir = tempfile.mkdtemp()
         self.pinecone_handler = PineconeHandler()
         
@@ -593,11 +591,6 @@ class VideoGenerator:
                     else:
                         print(f"✗ No fallback found for: {img}")
         
-        # If no valid images found, create a text-only video
-        if not valid_images:
-            print("Warning: No valid images found, creating a text-only video")
-            return self.create_text_only_video(audio_path, srt_path, output_path)
-        
         # Create image list file for FFmpeg
         # Use the duration from audio generation step to ensure consistency
         duration_per_image = audio_duration / len(valid_images)
@@ -614,187 +607,93 @@ class VideoGenerator:
         # Audio duration is already known, no need to recalculate
         
         # Create main video from images
-        temp_video_path = os.path.join(self.temp_dir, "temp_video.mp4")
+        # temp_video_path = os.path.join(self.temp_dir, "temp_video.mp4")
         
-        ffmpeg_cmd = [
-            'ffmpeg', '-y',
-            '-f', 'concat',
-            '-safe', '0',
-            '-i', image_list_path,
-            '-i', audio_path,
-            '-c:v', 'libx264',
-            '-c:a', 'aac',
-            '-pix_fmt', 'yuv420p',
-            '-shortest',
-            '-vf', f'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2',
-            temp_video_path
-        ]
+        # ffmpeg_cmd = [
+        #     'ffmpeg', '-y',
+        #     '-f', 'concat',
+        #     '-safe', '0',
+        #     '-i', image_list_path,
+        #     '-i', audio_path,
+        #     '-c:v', 'libx264',
+        #     '-c:a', 'aac',
+        #     '-pix_fmt', 'yuv420p',
+        #     '-shortest',
+        #     '-vf', f'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2',
+        #     temp_video_path
+        # ]
         
-        subprocess.run(ffmpeg_cmd, check=True)
+        # subprocess.run(ffmpeg_cmd, check=True)
         
-        # Add subtitles
-        video_with_subs = os.path.join(self.temp_dir, "video_with_subs.mp4")
+        # # Add subtitles
+        # video_with_subs = os.path.join(self.temp_dir, "video_with_subs.mp4")
         
-        subtitle_cmd = [
-            'ffmpeg', '-y',
-            '-i', temp_video_path,
-            '-vf', f"subtitles={srt_path}:force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2'",
-            '-c:a', 'copy',
-            video_with_subs
-        ]
+        # subtitle_cmd = [
+        #     'ffmpeg', '-y',
+        #     '-i', temp_video_path,
+        #     '-vf', f"subtitles={srt_path}:force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2'",
+        #     '-c:a', 'copy',
+        #     video_with_subs
+        # ]
         
-        subprocess.run(subtitle_cmd, check=True)
+        # subprocess.run(subtitle_cmd, check=True)
         
-        # Add ending video (check local directory first)
-        local_ending_video = os.path.join(os.getcwd(), "data/media/LensCover.mp4")
-        windows_ending_video = r"C:\Users\x7048\Documents\VideoMaker\LensCover.mp4"
+        # # Add ending video (check local directory first)
+        # local_ending_video = os.path.join(os.getcwd(), "data/media/LensCover.mp4")
+        # windows_ending_video = r"C:\Users\x7048\Documents\VideoMaker\LensCover.mp4"
         
-        ending_video = None
-        if os.path.exists(local_ending_video):
-            ending_video = local_ending_video
-            print(f"✓ Using local ending video: {local_ending_video}")
-        elif os.path.exists(windows_ending_video):
-            ending_video = windows_ending_video
-            print(f"✓ Using Windows ending video: {windows_ending_video}")
-        else:
-            print("⚠ No ending video found")
+        # ending_video = None
+        # if os.path.exists(local_ending_video):
+        #     ending_video = local_ending_video
+        #     print(f"✓ Using local ending video: {local_ending_video}")
+        # elif os.path.exists(windows_ending_video):
+        #     ending_video = windows_ending_video
+        #     print(f"✓ Using Windows ending video: {windows_ending_video}")
+        # else:
+        #     print("⚠ No ending video found")
         
-        if ending_video:
-            # First, re-encode ending video to match main video format (25fps)
-            temp_ending = os.path.join(self.temp_dir, "ending_25fps.mp4")
+        # if ending_video:
+        #     # First, re-encode ending video to match main video format (25fps)
+        #     temp_ending = os.path.join(self.temp_dir, "ending_25fps.mp4")
             
-            # Convert ending video to 25fps to match main video
-            convert_cmd = [
-                'ffmpeg', '-y',
-                '-i', ending_video,
-                '-r', '25',
-                '-c:v', 'libx264',
-                '-c:a', 'aac',
-                '-ar', '44100',
-                '-ac', '2',
-                temp_ending
-            ]
+        #     # Convert ending video to 25fps to match main video
+        #     convert_cmd = [
+        #         'ffmpeg', '-y',
+        #         '-i', ending_video,
+        #         '-r', '25',
+        #         '-c:v', 'libx264',
+        #         '-c:a', 'aac',
+        #         '-ar', '44100',
+        #         '-ac', '2',
+        #         temp_ending
+        #     ]
             
-            subprocess.run(convert_cmd, check=True)
+        #     subprocess.run(convert_cmd, check=True)
             
-            # Now concat with matching formats
-            final_video_list = os.path.join(self.temp_dir, "final_list.txt")
-            with open(final_video_list, 'w') as f:
-                f.write(f"file '{video_with_subs}'\n")
-                f.write(f"file '{temp_ending}'\n")
+        #     # Now concat with matching formats
+        #     final_video_list = os.path.join(self.temp_dir, "final_list.txt")
+        #     with open(final_video_list, 'w') as f:
+        #         f.write(f"file '{video_with_subs}'\n")
+        #         f.write(f"file '{temp_ending}'\n")
             
-            final_cmd = [
-                'ffmpeg', '-y',
-                '-f', 'concat',
-                '-safe', '0',
-                '-i', final_video_list,
-                '-c:v', 'libx264',
-                '-c:a', 'aac',
-                '-avoid_negative_ts', 'make_zero',
-                '-fflags', '+genpts',
-                output_path
-            ]
+        #     final_cmd = [
+        #         'ffmpeg', '-y',
+        #         '-f', 'concat',
+        #         '-safe', '0',
+        #         '-i', final_video_list,
+        #         '-c:v', 'libx264',
+        #         '-c:a', 'aac',
+        #         '-avoid_negative_ts', 'make_zero',
+        #         '-fflags', '+genpts',
+        #         output_path
+        #     ]
             
-            subprocess.run(final_cmd, check=True)
-        else:
-            # Just copy the video with subtitles as final output
-            subprocess.run(['cp', video_with_subs, output_path], check=True)
+        #     subprocess.run(final_cmd, check=True)
+        # else:
+        #     # Just copy the video with subtitles as final output
+        #     subprocess.run(['cp', video_with_subs, output_path], check=True)
         
-        return output_path
-    
-    def create_text_only_video(self, audio_path: str, srt_path: str, output_path: str) -> str:
-        """Create a text-only video with subtitles when no images are available"""
-        
-        # Create a simple black background video with audio and subtitles
-        temp_video_path = os.path.join(self.temp_dir, "text_only_video.mp4")
-        
-        # Get audio duration
-        duration = librosa.get_duration(path=audio_path)
-        
-        # Create black background video with audio
-        ffmpeg_cmd = [
-            'ffmpeg', '-y',
-            '-f', 'lavfi',
-            '-i', f'color=c=black:size=1920x1080:d={duration}',
-            '-i', audio_path,
-            '-c:v', 'libx264',
-            '-c:a', 'aac',
-            '-pix_fmt', 'yuv420p',
-            '-shortest',
-            temp_video_path
-        ]
-        
-        subprocess.run(ffmpeg_cmd, check=True)
-        
-        # Add subtitles
-        video_with_subs = os.path.join(self.temp_dir, "video_with_subs.mp4")
-        
-        subtitle_cmd = [
-            'ffmpeg', '-y',
-            '-i', temp_video_path,
-            '-vf', f"subtitles={srt_path}:force_style='FontSize=24,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2,Alignment=2'",
-            '-c:a', 'copy',
-            video_with_subs
-        ]
-        
-        subprocess.run(subtitle_cmd, check=True)
-        
-        # Add ending video if exists (check local directory first)
-        local_ending_video = os.path.join(os.getcwd(), "data/media/LensCover.mp4")
-        windows_ending_video = r"C:\Users\x7048\Documents\VideoMaker\LensCover.mp4"
-        
-        ending_video = None
-        if os.path.exists(local_ending_video):
-            ending_video = local_ending_video
-            print(f"✓ Using local ending video: {local_ending_video}")
-        elif os.path.exists(windows_ending_video):
-            ending_video = windows_ending_video
-            print(f"✓ Using Windows ending video: {windows_ending_video}")
-        else:
-            print("⚠ No ending video found")
-        
-        if ending_video:
-            # First, re-encode ending video to match main video format (25fps)
-            temp_ending = os.path.join(self.temp_dir, "ending_25fps.mp4")
-            
-            # Convert ending video to 25fps to match main video
-            convert_cmd = [
-                'ffmpeg', '-y',
-                '-i', ending_video,
-                '-r', '25',
-                '-c:v', 'libx264',
-                '-c:a', 'aac',
-                '-ar', '44100',
-                '-ac', '2',
-                temp_ending
-            ]
-            
-            subprocess.run(convert_cmd, check=True)
-            
-            # Now concat with matching formats
-            final_video_list = os.path.join(self.temp_dir, "final_list.txt")
-            with open(final_video_list, 'w') as f:
-                f.write(f"file '{video_with_subs}'\n")
-                f.write(f"file '{temp_ending}'\n")
-            
-            final_cmd = [
-                'ffmpeg', '-y',
-                '-f', 'concat',
-                '-safe', '0',
-                '-i', final_video_list,
-                '-c:v', 'libx264',
-                '-c:a', 'aac',
-                '-avoid_negative_ts', 'make_zero',
-                '-fflags', '+genpts',
-                output_path
-            ]
-            
-            subprocess.run(final_cmd, check=True)
-        else:
-            # Just copy the video with subtitles as final output
-            subprocess.run(['cp', video_with_subs, output_path], check=True)
-        
-        return output_path
+        # return output_path
     
     def generate_video_from_article(self, 
                                   article: str = None, 
@@ -835,36 +734,38 @@ class VideoGenerator:
                 print("Step 1: Splitting article into sentences...")
                 sentences = self.split_article_into_sentences(article)
                 print(f"Found {len(sentences)} sentences")
+                print(article)
+                print(sentences)
             
-            # Handle audio generation or use custom audio
-            if custom_audio_path and os.path.exists(custom_audio_path):
-                print("Using custom audio file provided by user...")
-                audio_path, audio_duration = self.generate_audio(custom_audio_path=custom_audio_path)
-                print(f"Custom audio duration: {audio_duration:.2f} seconds")
-            else:
-                print("Step 2: Generating audio from text...")
-                # Use the processed article text for audio generation
-                text_for_audio = article if not use_gpt_transcript else article
-                audio_path, audio_duration = self.generate_audio(text_for_generation=text_for_audio)
-                print(f"Audio duration: {audio_duration:.2f} seconds")
+            # # Handle audio generation or use custom audio
+            # if custom_audio_path and os.path.exists(custom_audio_path):
+            #     print("Using custom audio file provided by user...")
+            #     audio_path, audio_duration = self.generate_audio(custom_audio_path=custom_audio_path)
+            #     print(f"Custom audio duration: {audio_duration:.2f} seconds")
+            # else:
+            #     print("Step 2: Generating audio from text...")
+            #     # Use the processed article text for audio generation
+            #     text_for_audio = article if not use_gpt_transcript else article
+            #     audio_path, audio_duration = self.generate_audio(text_for_generation=text_for_audio)
+            #     print(f"Audio duration: {audio_duration:.2f} seconds")
             
-            # Generate SRT if not using custom
-            if not custom_srt_path:
-                print("Step 3: Generating SRT file...")
-                srt_path = self.generate_srt_file(sentences, audio_duration)
-                print(f"SRT file created: {srt_path}")
+            # # Generate SRT if not using custom
+            # if not custom_srt_path:
+            #     print("Step 3: Generating SRT file...")
+            #     srt_path = self.generate_srt_file(sentences, audio_duration)
+            #     print(f"SRT file created: {srt_path}")
             
-            print("Step 4: Searching for images using vector search...")
-            image_paths = self.vector_search_images(sentences)
-            print(f"Found {len([p for p in image_paths if p])} valid images")
+            # print("Step 4: Searching for images using vector search...")
+            # image_paths = self.vector_search_images(sentences)
+            # print(f"Found {len([p for p in image_paths if p])} valid images")
             
-            print("Step 5: Creating video with FFmpeg...")
-            final_video = self.create_video_with_ffmpeg(
-                image_paths, audio_path, srt_path, output_path, audio_duration
-            )
+            # print("Step 5: Creating video with FFmpeg...")
+            # final_video = self.create_video_with_ffmpeg(
+            #     image_paths, audio_path, srt_path, output_path, audio_duration
+            # )
             
-            print(f"Video generation completed: {final_video}")
-            return final_video
+            # print(f"Video generation completed: {final_video}")
+            # return final_video
             
         except Exception as e:
             print(f"Error during video generation: {str(e)}")
@@ -923,7 +824,7 @@ def main():
             print("\n=== Example 2: Use custom audio file ===")
             output_file_2 = generator.generate_video_from_article(
                 article=fixed_article, 
-                output_path="raymond_bridge.mp4",
+                output_path="raymond_bridge11.mp4",
                 use_gpt_transcript=False,
                 custom_srt_path=None,
                 custom_audio_path=custom_audio
@@ -932,8 +833,8 @@ def main():
         
     except Exception as e:
         print(f"Error: {e}")
-    finally:
-        generator.cleanup()
+    # finally:
+    #     generator.cleanup()
 
 if __name__ == "__main__":
     main()
