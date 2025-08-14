@@ -27,6 +27,7 @@ project_root = os.path.dirname(
 sys.path.append(project_root)
 
 from src.database.pinecone_handler import PineconeHandler
+from src.utils.json_image_loader import JsonImageLoader
 
 # Load environment variables
 load_dotenv()
@@ -44,79 +45,6 @@ transcript_user_prompt = """
     Dont include any other text or symbols in your response.
     
 """
-
-# PROMPT 1: Art Style Selection
-ART_STYLE_PROMPT = """
-You are an art director who selects the perfect visual style for content. Based on the provided transcript, choose an appropriate art style that would best represent the content visually. If it's a children's book choose from the children's collection.
-
-Transcript:
-{transcript}
-
-If it's a children's book choose one of these styles and additionaly enphises the use of vivid colours and cuteness:
-Watercolour Painting
-Pastel Crayon / Chalk
-Coloured Pencil Sketch
-Classic Cartoon Illustration
-Exaggerated Caricature
-Simple Line Art with Flat Colours
-Fairy Tale Ink & Wash
-Retro Golden Book Style
-Cut-Paper Collage
-Anime / Chibi Style
-Digital Soft-Shaded
-Vector Art (Flat & Clean)
-Clay / Stop-Motion Look
-Felt & Fabric Illustration
-Woodblock Print-Inspired
-Monochrome Line and Wash
-
-If it's educational content choose one of these styles:
-Flat Vector Design
-Minimalist Line Art
-Diagrammatic Illustration
-Isometric Illustration
-Blueprint / Technical Drawing Style
-Monochrome Line and Wash
-Photorealistic Illustration
-Digital 3D Rendering
-Data Visualisation Style
-Pictogram / Icon-Based Design
-
-If a novel, choose one of these styles:
-Painterly Watercolour
-Oil Painting Style
-Gouache Illustration
-Impressionist Brushwork
-Digital Painting (Rich Colour)
-Coloured Ink Wash
-Art Nouveau Style
-Fantasy Concept Art
-Pastel Illustration
-Surrealist Painting
-
-Return ONLY the art style name. Based on the transcript, set the tone and vibe.
-"""
-
-# PROMPT 2: Image Prompt Generation with Style
-IMAGE_PROMPT_WITH_STYLE = """
-You are a professional visual content creator. Using the provided transcript and the selected art style, generate a detailed image prompt that would be perfect for creating a visual representation of the spoken content.
-
-Transcript:
-{transcript}
-
-Art Style: {art_style}
-
-Generate a single, detailed image prompt that captures the essence of this content in the specified art style. The prompt should be:
-- Descriptive and specific
-- Incorporate the specified art style
-- Visually compelling
-- Relevant to the transcript content
-- Suitable for AI image generation tools
-
-Make sure to weave the art style naturally into the prompt description.
-Return ONLY the image prompt text, nothing else.
-"""
-
 image_prompt = """
     You are a professional video director. Based on the provided transcript and audio duration, generate a script with image descriptions and durations.
     
@@ -156,11 +84,127 @@ image_user_prompt = """
 
 
 class VideoGenerator:
-    def __init__(self):
-        """Initialize the video generator"""
+    def __init__(self, restricted_json_file: str = None, topic: str = None):
+        """Initialize the video generator
+
+        Args:
+            restricted_json_file: Optional path to JSON file containing restricted image dataset.
+                                If provided, image selection will be limited to images in this dataset.
+            topic: Selected topic for category-based filtering (optional)
+        """
         self.temp_dir = tempfile.mkdtemp()
         # self.temp_dir = "temp"
         self.pinecone_handler = PineconeHandler()
+        self.topic = topic
+        self.topic_categories = self._get_topic_categories()
+
+        # Initialize restricted image loader if JSON file is provided
+        self.json_image_loader = None
+        self.restricted_task_ids = set()
+        if restricted_json_file and os.path.exists(restricted_json_file):
+            try:
+                self.json_image_loader = JsonImageLoader(restricted_json_file)
+                self.restricted_task_ids = self.json_image_loader.get_all_task_ids()
+                
+                # Filter by topic categories if specified
+                if self.topic and self.topic in self.topic_categories:
+                    allowed_categories = self.topic_categories[self.topic]
+                    print(f"🎯 Topic '{self.topic}' allows categories: {allowed_categories}")
+                    
+                print(f"🔒 Restricted image mode enabled: {len(self.restricted_task_ids)} images available")
+            except Exception as e:
+                print(f"⚠️ Warning: Could not load restricted image dataset: {e}")
+                self.json_image_loader = None
+
+    def _get_topic_categories(self) -> dict:
+        """
+        Define mapping from topics to allowed categories and subcategories
+        
+        Returns:
+            Dict mapping topic names to lists of allowed categories
+        """
+        return {
+            'astrology': ['REAL_ESTATE', 'FINANCE', 'INVESTMENT', 'ASTROLOGY', 'ZODIAC', 'STARS'],
+            'trading': ['REAL_ESTATE', 'FINANCE', 'INVESTMENT', 'BUSINESS', 'DAY_TRADING', 'TRADING', 'STOCK_MARKET'],
+            'fantasy': ['FANTASY_ADVENTURE', 'FANTASY', 'MAGICAL'],
+            'horror': ['SPOOKY_STORY', 'HORROR', 'DARK', 'SUPERNATURAL'],
+            'romance': ['ROMANCE', 'LOVE', 'ROMANTIC'],
+            'drama': ['DRAMA', 'EMOTIONAL', 'HUMAN_STORY'],
+            'thriller': ['THRILLER', 'SUSPENSE', 'ACTION', 'MYSTERY']
+        }
+
+    def _collect_image_previews(self, image_paths: List[str], descriptions: List[str]) -> List[dict]:
+        """
+        Collect image preview information for frontend display
+        
+        Args:
+            image_paths: List of image file paths (may contain None values)
+            descriptions: List of descriptions/sentences for each image
+            
+        Returns:
+            List of dictionaries with image preview information
+        """
+        previews = []
+        
+        for i, (path, description) in enumerate(zip(image_paths, descriptions)):
+            preview_info = {
+                "index": i,
+                "description": description[:100] + "..." if len(description) > 100 else description,
+                "has_image": path is not None,
+                "image_path": None,
+                "fallback_used": False,
+                "error_reason": None
+            }
+            
+            if path:
+                # Convert to relative path for serving
+                wsl_path = self.convert_windows_path_to_wsl(path)
+                if os.path.exists(wsl_path):
+                    # Create a web-accessible path relative to allowed directories
+                    # API server checks these allowed directories:
+                    # - /home/fluxmind/batch_image/data
+                    # - /mnt/c/Users/x7048/Documents/ComfyUI/output
+                    
+                    # Try to create relative path from known base directories
+                    allowed_bases = [
+                        "/home/fluxmind/batch_image/data",
+                        "/mnt/c/Users/x7048/Documents/ComfyUI/output"
+                    ]
+                    
+                    web_path = os.path.basename(wsl_path)  # fallback to just filename
+                    for base_dir in allowed_bases:
+                        try:
+                            if wsl_path.startswith(base_dir):
+                                web_path = os.path.relpath(wsl_path, base_dir)
+                                break
+                        except ValueError:
+                            continue
+                    
+                    preview_info["image_path"] = web_path
+                    preview_info["full_path"] = wsl_path
+                    
+                    # Get additional metadata if available from JSON loader
+                    if self.json_image_loader:
+                        try:
+                            # Find the image info by path matching
+                            for category_name, category_data in self.json_image_loader.data.items():
+                                for img_info in category_data:
+                                    # img_info is a dict, not an object
+                                    if img_info.get("file_path", "").endswith(os.path.basename(wsl_path)):
+                                        preview_info["category"] = category_name
+                                        preview_info["tags"] = img_info.get("tags", "")
+                                        break
+                        except Exception as e:
+                            print(f"Warning: Could not get metadata for {wsl_path}: {e}")
+                else:
+                    preview_info["fallback_used"] = True
+                    preview_info["error_reason"] = f"File not found: {wsl_path}" if path else "No image path returned from search"
+            else:
+                preview_info["error_reason"] = "No image found for this description"
+            
+            previews.append(preview_info)
+        
+        return previews
 
     def generate_transcript_from_article(self, article: str) -> str:
         """Generate a 1-minute transcript from an article using GPT"""
@@ -212,53 +256,6 @@ class VideoGenerator:
             print(f"Error generating transcript: {e}")
             print("Falling back to original article")
             return article
-
-    def select_art_style(self, transcript: str) -> str:
-        """Select art style based on transcript content using GPT
-        
-        Args:
-            transcript: The transcript content
-            
-        Returns:
-            str: Selected art style name
-        """
-        try:
-            # Get Azure OpenAI credentials from environment
-            api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
-            api_key = os.getenv("AZURE_OPENAI_API_KEY")
-
-            if not api_base or not api_key:
-                print("Warning: Azure OpenAI credentials not found. Using default art style.")
-                return "Digital Painting (Rich Colour)"
-
-            # Initialize Azure OpenAI
-            llm = AzureChatOpenAI(
-                azure_endpoint=api_base,
-                api_key=api_key,
-                azure_deployment="gpt-4o-testing",
-                api_version="2025-01-01-preview",
-                temperature=0.3,  # Lower temperature for more consistent style selection
-                max_tokens=50,
-                timeout=None,
-                max_retries=2,
-            )
-
-            # Create prompt template for art style selection
-            prompt_template = ChatPromptTemplate.from_messages([
-                ("system", ART_STYLE_PROMPT),
-                ("human", "{transcript}"),
-            ])
-
-            # Generate art style selection
-            chain = prompt_template | llm | StrOutputParser()
-            art_style = chain.invoke({"transcript": transcript}).strip()
-            
-            print(f"✓ Selected art style: {art_style}")
-            return art_style
-
-        except Exception as e:
-            print(f"Error selecting art style: {e}")
-            return "Digital Painting (Rich Colour)"  # Default fallback
 
     def split_article_into_sentences(self, article: str) -> List[str]:
         """Split article into short sentences (max 10 chars) without punctuation"""
@@ -663,18 +660,19 @@ class VideoGenerator:
 
             # Calculate duration based on text length and reading speed
             sentence_chars = self._calculate_text_width(sentence)
-            min_duration = 1.0  # Minimum 1.0 seconds per subtitle (reduced from 1.5)
-            # Adjust for shorter sentences to allow faster switching
+            # Increased minimum durations for better readability
+            min_duration = 1.5  # Minimum 1.5 seconds per subtitle for better readability
+            # Adjust for shorter sentences to allow appropriate reading time
             if sentence_chars < 30:
-                min_duration = 0.8
+                min_duration = 1.2  # Increased from 0.8
             elif sentence_chars < 50:
-                min_duration = 1.0
+                min_duration = 1.5  # Increased from 1.0
             else:
-                min_duration = 1.2
+                min_duration = 2.0  # Increased from 1.2
 
             calculated_duration = max(
-                min_duration, sentence_chars / chars_per_second * 0.9
-            )  # Slightly faster timing
+                min_duration, sentence_chars / chars_per_second * 1.1
+            )  # Slightly slower timing for better reading comprehension
 
             subtitle_chunks.append(
                 {
@@ -758,7 +756,7 @@ class VideoGenerator:
             return []
 
     def generate_audio_from_api(self, text: str) -> Tuple[str, float]:
-        """Generate audio from text using ElevenLabs API"""
+        """Generate audio from text using ElevenLabs API with text chunking for long texts"""
         try:
             # Get ElevenLabs API credentials from environment
             elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
@@ -776,30 +774,155 @@ class VideoGenerator:
                 f"Generating audio with ElevenLabs API (text length: {len(text)} chars)..."
             )
 
-            # Generate audio using the client
-            audio = elevenlabs.text_to_speech.convert(
-                text=text,
-                voice_id=voice_id,
-                model_id="eleven_multilingual_v2",
-                output_format="mp3_44100_128",
-            )
+            # ElevenLabs has a 10,000 character limit, so we need to chunk long texts
+            MAX_CHARS = 9500  # Leave some buffer for safety
+            
+            if len(text) <= MAX_CHARS:
+                # Single request for short text
+                audio = elevenlabs.text_to_speech.convert(
+                    text=text,
+                    voice_id=voice_id,
+                    model_id="eleven_multilingual_v2",
+                    output_format="mp3_44100_128",
+                )
 
-            # Save audio to temp directory
-            temp_audio_path = os.path.join(self.temp_dir, "generated_audio.mp3")
-            with open(temp_audio_path, "wb") as f:
-                # audio is an iterator, so we need to iterate through the chunks
-                for chunk in audio:
-                    f.write(chunk)
+                # Save audio to temp directory
+                temp_audio_path = os.path.join(self.temp_dir, "generated_audio.mp3")
+                with open(temp_audio_path, "wb") as f:
+                    # audio is an iterator, so we need to iterate through the chunks
+                    for chunk in audio:
+                        f.write(chunk)
 
-            # Get audio duration
-            duration = librosa.get_duration(path=temp_audio_path)
-            print(f"✓ Generated audio from ElevenLabs API, duration: {duration:.2f}s")
+                # Get audio duration
+                duration = librosa.get_duration(path=temp_audio_path)
+                print(f"✓ Generated audio from ElevenLabs API, duration: {duration:.2f}s")
 
-            return temp_audio_path, duration
+                return temp_audio_path, duration
+            else:
+                # Multiple requests for long text - chunk by sentences
+                print(f"Text too long ({len(text)} chars), splitting into chunks...")
+                
+                # Split text into chunks by sentences while respecting character limit
+                chunks = self._split_text_into_chunks(text, MAX_CHARS)
+                print(f"Split text into {len(chunks)} chunks")
+                
+                # Generate audio for each chunk
+                audio_files = []
+                total_duration = 0
+                
+                for i, chunk in enumerate(chunks):
+                    print(f"Generating audio for chunk {i+1}/{len(chunks)} ({len(chunk)} chars)...")
+                    
+                    audio = elevenlabs.text_to_speech.convert(
+                        text=chunk,
+                        voice_id=voice_id,
+                        model_id="eleven_multilingual_v2",
+                        output_format="mp3_44100_128",
+                    )
+
+                    # Save chunk audio to temp file
+                    chunk_audio_path = os.path.join(self.temp_dir, f"audio_chunk_{i}.mp3")
+                    with open(chunk_audio_path, "wb") as f:
+                        for audio_chunk in audio:
+                            f.write(audio_chunk)
+                    
+                    audio_files.append(chunk_audio_path)
+                    chunk_duration = librosa.get_duration(path=chunk_audio_path)
+                    total_duration += chunk_duration
+                    print(f"✓ Chunk {i+1} generated, duration: {chunk_duration:.2f}s")
+                
+                # Concatenate all audio files
+                final_audio_path = os.path.join(self.temp_dir, "generated_audio.mp3")
+                self._concatenate_audio_files(audio_files, final_audio_path)
+                
+                # Clean up chunk files
+                for chunk_file in audio_files:
+                    if os.path.exists(chunk_file):
+                        os.remove(chunk_file)
+                
+                print(f"✓ Generated complete audio from {len(chunks)} chunks, total duration: {total_duration:.2f}s")
+                return final_audio_path, total_duration
 
         except Exception as e:
             print(f"Error generating audio from ElevenLabs API: {e}")
             raise
+
+    def _split_text_into_chunks(self, text: str, max_chars: int) -> List[str]:
+        """Split text into chunks that respect sentence boundaries and character limits"""
+        # Split by sentences first
+        sentences = re.split(r'[.!?]+', text)
+        chunks = []
+        current_chunk = ""
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+                
+            # If adding this sentence would exceed limit, start new chunk
+            if len(current_chunk) + len(sentence) + 1 > max_chars:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = sentence
+                else:
+                    # Single sentence too long - split by words
+                    if len(sentence) > max_chars:
+                        words = sentence.split()
+                        word_chunk = ""
+                        for word in words:
+                            if len(word_chunk) + len(word) + 1 > max_chars:
+                                if word_chunk:
+                                    chunks.append(word_chunk.strip())
+                                    word_chunk = word
+                                else:
+                                    # Single word too long - just truncate
+                                    chunks.append(word[:max_chars])
+                            else:
+                                word_chunk += " " + word if word_chunk else word
+                        if word_chunk:
+                            current_chunk = word_chunk
+                    else:
+                        current_chunk = sentence
+            else:
+                current_chunk += ". " + sentence if current_chunk else sentence
+        
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        
+        return chunks
+
+    def _concatenate_audio_files(self, audio_files: List[str], output_path: str):
+        """Concatenate multiple audio files into a single file using ffmpeg"""
+        if not audio_files:
+            raise ValueError("No audio files to concatenate")
+        
+        if len(audio_files) == 1:
+            # Just copy the single file
+            import shutil
+            shutil.copy2(audio_files[0], output_path)
+            return
+        
+        # Create a temporary file list for ffmpeg concat
+        concat_file_path = os.path.join(self.temp_dir, "audio_concat_list.txt")
+        with open(concat_file_path, 'w') as f:
+            for audio_file in audio_files:
+                f.write(f"file '{os.path.abspath(audio_file)}'\n")
+        
+        # Use ffmpeg to concatenate
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", concat_file_path,
+            "-c", "copy",
+            output_path
+        ]
+        
+        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise Exception(f"FFmpeg concatenation failed: {result.stderr}")
+        
+        # Clean up temp file
+        if os.path.exists(concat_file_path):
+            os.remove(concat_file_path)
 
     def generate_audio(
         self, custom_audio_path: str = None, text_for_generation: str = None
@@ -876,11 +999,19 @@ class VideoGenerator:
             return self.generate_audio_from_api(text_for_generation)
 
     def vector_search_images(
-        self, descriptions: List[str], top_k: int = 5
+        self, descriptions: List[str], top_k: int = 10
     ) -> List[str]:
         """Search for images using vector similarity for each sentence with deduplication"""
         image_paths = []
         used_images = set()  # Track used images to avoid duplicates
+
+        # Show topic filtering status
+        if self.topic and self.topic in self.topic_categories:
+            print(f"🎯 Topic-based filtering active: '{self.topic}' -> categories {self.topic_categories[self.topic]}")
+        elif self.json_image_loader:
+            print(f"🔒 Restricted dataset mode (no topic filter)")
+        else:
+            print(f"🌍 Full dataset mode (no restrictions)")
 
         if not self.pinecone_handler:
             print("Warning: Pinecone handler not initialized, using dummy image paths")
@@ -900,48 +1031,209 @@ class VideoGenerator:
                 selected_image = None
 
                 if results and len(results) > 0:
-                    # Try to find an unused image from the results
+                    # Try to find an unused image from the results that actually exists
                     for result in results:
                         if "metadata" in result and "file_path" in result["metadata"]:
                             candidate_path = result["metadata"]["file_path"]
+
+                            # Check if image is allowed in restricted mode
+                            if self.json_image_loader and not self._is_image_allowed(result):
+                                continue
+
+                            # Validate that the file actually exists
+                            wsl_candidate_path = self.convert_windows_path_to_wsl(candidate_path)
+                            if not os.path.exists(wsl_candidate_path):
+                                print(f"⚠ Skipping missing file: {candidate_path}")
+                                continue
 
                             # Check if this image hasn't been used yet
                             if candidate_path not in used_images:
                                 selected_image = candidate_path
                                 used_images.add(candidate_path)
+                                restriction_note = " (restricted)" if self.json_image_loader else ""
                                 print(
-                                    f"Found unique image for '{description[:30]}...': {candidate_path}"
+                                    f"Found unique image{restriction_note} for '{description[:30]}...': {candidate_path}"
                                 )
                                 break
 
-                    # If all top results are already used, use the best match anyway
+                    # If all top results are already used, try to find any allowed image as fallback
                     if selected_image is None and results:
-                        fallback_result = results[0]
-                        if (
-                            "metadata" in fallback_result
-                            and "file_path" in fallback_result["metadata"]
-                        ):
-                            selected_image = fallback_result["metadata"]["file_path"]
-                            print(
-                                f"Using duplicate image (no unique found) for '{description[:30]}...': {selected_image}"
-                            )
+                        for result in results:
+                            if "metadata" in result and "file_path" in result["metadata"]:
+                                candidate_path = result["metadata"]["file_path"]
+                                
+                                # Check if image is allowed in restricted mode
+                                if self.json_image_loader and not self._is_image_allowed(result):
+                                    continue
+
+                                # Validate that the file actually exists
+                                wsl_candidate_path = self.convert_windows_path_to_wsl(candidate_path)
+                                if not os.path.exists(wsl_candidate_path):
+                                    continue
+
+                                selected_image = candidate_path
+                                restriction_note = " (restricted)" if self.json_image_loader else ""
+                                print(
+                                    f"Using duplicate image{restriction_note} (no unique found) for '{description[:30]}...': {selected_image}"
+                                )
+                                break
 
                 if selected_image:
                     image_paths.append(selected_image)
                 else:
-                    print(
-                        f"Warning: No valid images found for description: {description[:50]}..."
-                    )
-                    image_paths.append(None)
+                    # If in restricted mode and no images found, use smart fallback strategy
+                    if self.json_image_loader and results:
+                        if self.topic and self.topic in self.topic_categories:
+                            # When topic is specified, try fallback within topic first
+                            fallback_used = False
+                            for result in results[:3]:  # Try top 3 results
+                                if "metadata" in result and "file_path" in result["metadata"]:
+                                    candidate_path = result["metadata"]["file_path"]
+                                    
+                                    # Validate that the file actually exists
+                                    wsl_candidate_path = self.convert_windows_path_to_wsl(candidate_path)
+                                    if not os.path.exists(wsl_candidate_path):
+                                        continue
+                                    
+                                    selected_image = candidate_path
+                                    image_paths.append(selected_image)
+                                    print(f"🔄 Using topic fallback for '{description[:30]}...': {selected_image}")
+                                    fallback_used = True
+                                    break
+                            
+                            if not fallback_used:
+                                print(f"🚫 No images found for '{description[:30]}...' in topic '{self.topic}'")
+                                image_paths.append(None)
+                        else:
+                            # Only use fallback if no topic restriction is active
+                            print(f"🔄 No restricted images found for '{description[:30]}...', using fallback")
+                            fallback_found = False
+                            for result in results[:5]:  # Try top 5 results for fallback
+                                if "metadata" in result and "file_path" in result["metadata"]:
+                                    candidate_path = result["metadata"]["file_path"]
+                                    
+                                    # Validate that the file actually exists
+                                    wsl_candidate_path = self.convert_windows_path_to_wsl(candidate_path)
+                                    if not os.path.exists(wsl_candidate_path):
+                                        continue
+                                    
+                                    selected_image = candidate_path
+                                    image_paths.append(selected_image)
+                                    print(f"   Using fallback image: {selected_image}")
+                                    fallback_found = True
+                                    break
+                            
+                            if not fallback_found:
+                                image_paths.append(None)
+                    else:
+                        print(
+                            f"⚠ No search results for description: {description[:50]}..."
+                        )
+                        image_paths.append(None)
 
             except Exception as e:
                 print(f"Error searching for description '{description[:50]}...': {e}")
                 image_paths.append(None)
+        
+        # Final attempt: if we have NO images at all, try to find at least one working image
+        if all(path is None for path in image_paths) and len(descriptions) > 0:
+            print("🔥 Emergency fallback: No images found, searching for any available image...")
+            try:
+                # Use a very general search term to find any image
+                emergency_results = self.pinecone_handler.query_pinecone(
+                    query="image picture photo",
+                    metadata_filter={},
+                    index_name="image-library", 
+                    namespace="description",
+                    top_k=20
+                )
+                
+                for result in emergency_results:
+                    if "metadata" in result and "file_path" in result["metadata"]:
+                        candidate_path = result["metadata"]["file_path"]
+                        wsl_candidate_path = self.convert_windows_path_to_wsl(candidate_path)
+                        if os.path.exists(wsl_candidate_path):
+                            # Use this image for the first description
+                            image_paths[0] = candidate_path
+                            print(f"🆘 Emergency fallback image found: {candidate_path}")
+                            break
+            except Exception as e:
+                print(f"Emergency fallback failed: {e}")
 
+        # Report detailed image assignment statistics
+        found_count = len([p for p in image_paths if p is not None])
+        missing_count = len(descriptions) - found_count
         print(
             f"📊 Image diversity: {len(used_images)} unique images selected for {len(descriptions)} descriptions"
         )
+        print(f"📊 Assignment result: {found_count}/{len(descriptions)} images found, {missing_count} missing")
+        
+        # Log any missing assignments for debugging
+        if missing_count > 0:
+            for i, (path, desc) in enumerate(zip(image_paths, descriptions)):
+                if path is None:
+                    print(f"❌ Missing image #{i+1}: '{desc[:50]}...'")
+        
         return image_paths
+
+    def _is_image_allowed(self, search_result: dict) -> bool:
+        """
+        Check if an image from search results is allowed in restricted mode
+        Enforces both dataset restrictions and topic category filtering
+
+        Args:
+            search_result: Pinecone search result with metadata
+
+        Returns:
+            True if image is allowed, False otherwise
+        """
+        if not self.json_image_loader:
+            return True  # No restrictions if no JSON loader
+
+        # Try to extract task_id from metadata
+        metadata = search_result.get("metadata", {})
+        found_image_info = None
+
+        # Check various possible fields that might contain task_id
+        possible_task_id_fields = ["task_id", "id", "uuid", "image_id"]
+
+        for field in possible_task_id_fields:
+            if field in metadata:
+                task_id = metadata[field]
+                if task_id in self.restricted_task_ids:
+                    found_image_info = self.json_image_loader.get_image_by_task_id(task_id)
+                    break
+
+        # If no task_id match found, check file path or name matching
+        if not found_image_info:
+            file_path = metadata.get("file_path", "")
+            if file_path:
+                # Extract filename from path
+                filename = os.path.basename(file_path)
+
+                # Check if any image in our dataset has a matching filename pattern
+                for image_info in self.json_image_loader.images:
+                    if image_info.file_name and image_info.file_name in filename:
+                        found_image_info = image_info
+                        break
+
+        if not found_image_info:
+            return False  # Not found in restricted dataset
+
+        # If we have a topic restriction, check category matching
+        if self.topic and self.topic in self.topic_categories:
+            allowed_categories = self.topic_categories[self.topic]
+            image_category = found_image_info.category
+
+            # Check if the image's category is in the allowed list for this topic
+            if image_category not in allowed_categories:
+                print(f"🚫 Filtered out image from category '{image_category}' (topic '{self.topic}' allows: {allowed_categories})")
+                return False
+            else:
+                # Image matches topic category - show success
+                print(f"✅ Image from category '{image_category}' matches topic '{self.topic}'")
+
+        return True  # Image passes all restrictions
 
     def convert_windows_path_to_wsl(self, windows_path: str) -> str:
         """Convert Windows path to WSL path"""
@@ -954,7 +1246,7 @@ class VideoGenerator:
     def find_fallback_image(
         self, original_path: str, used_fallbacks: set = None
     ) -> str:
-        """Find a fallback image in the same directory when the original is not found"""
+        """Find a fallback image in the same directory or use project fallbacks when the original is not found"""
         if used_fallbacks is None:
             used_fallbacks = set()
 
@@ -965,7 +1257,7 @@ class VideoGenerator:
             # Look for .png files in the same directory, avoiding already used fallbacks
             available_files = []
             for file in os.listdir(directory):
-                if file.endswith(".png"):
+                if file.endswith((".png", ".jpg")):
                     fallback_path = os.path.join(directory, file)
                     if (
                         os.path.exists(fallback_path)
@@ -982,13 +1274,38 @@ class VideoGenerator:
 
             # If all files are used, just pick the first available file
             for file in os.listdir(directory):
-                if file.endswith(".png"):
+                if file.endswith((".png", ".jpg")):
                     fallback_path = os.path.join(directory, file)
                     if os.path.exists(fallback_path):
                         print(
                             f"🔄 Using fallback image (no unique available): {fallback_path}"
                         )
                         return fallback_path
+        
+        # If original directory doesn't exist, use project fallback images
+        fallback_dir = os.path.join(os.getcwd(), "fallback_images")
+        if os.path.exists(fallback_dir):
+            available_fallbacks = []
+            for file in os.listdir(fallback_dir):
+                if file.endswith((".png", ".jpg")):
+                    fallback_path = os.path.join(fallback_dir, file)
+                    if fallback_path not in used_fallbacks:
+                        available_fallbacks.append(fallback_path)
+            
+            if available_fallbacks:
+                selected_fallback = available_fallbacks[0]
+                used_fallbacks.add(selected_fallback)
+                print(f"🎨 Using project fallback image: {selected_fallback}")
+                return selected_fallback
+            
+            # If all project fallbacks are used, cycle through them
+            for file in os.listdir(fallback_dir):
+                if file.endswith((".png", ".jpg")):
+                    fallback_path = os.path.join(fallback_dir, file)
+                    if os.path.exists(fallback_path):
+                        print(f"🎨 Using project fallback image (cycling): {fallback_path}")
+                        return fallback_path
+        
         return None
 
     def create_video_with_ffmpeg(
@@ -1046,12 +1363,12 @@ class VideoGenerator:
         )
 
         # Audio duration is already known, no need to recalculate
+        
+        # Default to vertical format (9:16) if not specified
+        width, height = 1080, 1920  # Vertical format (mobile/social media)
 
         # Create main video from images
         temp_video_path = os.path.join(self.temp_dir, "temp_video.mp4")
-
-        # Standard video scaling
-        video_filter = f"scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
 
         ffmpeg_cmd = [
             "ffmpeg",
@@ -1073,7 +1390,7 @@ class VideoGenerator:
             "-t",
             str(audio_duration),  # Limit video to audio duration
             "-vf",
-            video_filter,
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2", # resize to proper aspect ratio
             temp_video_path,
         ]
 
@@ -1081,6 +1398,21 @@ class VideoGenerator:
 
         # Add subtitles
         video_with_subs = os.path.join(self.temp_dir, "video_with_subs.mp4")
+        
+        # Calculate dynamic subtitle styling based on video dimensions with smaller, centered text
+        center_margin = 0  # Center vertically (restored)
+        font_size = max(20, int(height * 0.012))  # Restored to previously working size: at least 20, or 1.2% of video height
+        
+        # Simplified subtitle styling for maximum compatibility and visibility
+        subtitle_style = (
+            f"FontSize={font_size},"
+            f"PrimaryColour=&Hffffff,"  # White text
+            f"OutlineColour=&H000000,"  # Black outline
+            f"Outline=2,"               # Reduced outline thickness
+            f"Alignment=5,"             # Middle center alignment (restored)
+            f"MarginV={center_margin}," # Center margin (restored)
+            f"Bold=1"                   # Bold text
+        )
 
         subtitle_cmd = [
             "ffmpeg",
@@ -1088,7 +1420,7 @@ class VideoGenerator:
             "-i",
             temp_video_path,
             "-vf",
-            f"subtitles={srt_path}:force_style='FontSize=14,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2'",
+            f"subtitles={srt_path}:force_style='{subtitle_style}'",
             "-c:a",
             "copy",
             video_with_subs,
@@ -1176,8 +1508,15 @@ class VideoGenerator:
         srt_path: str,
         output_path: str,
         audio_duration: float,
+        aspect_ratio: str = "9:16",
     ) -> str:
         """Create video using image script with specific durations for each image"""
+        # Set dimensions based on aspect ratio
+        if aspect_ratio == "9:16":
+            width, height = 1080, 1920  # Vertical format (mobile/social media)
+        else:
+            width, height = 1920, 1080  # Horizontal format (traditional)
+        
         # Ensure we have the same number of images and script items
         if len(image_paths) != len(image_script):
             print(
@@ -1263,7 +1602,7 @@ class VideoGenerator:
             "-t",
             str(audio_duration),  # Limit video to audio duration
             "-vf",
-            f"scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
             temp_video_path,
         ]
 
@@ -1271,6 +1610,21 @@ class VideoGenerator:
 
         # Add subtitles
         video_with_subs = os.path.join(self.temp_dir, "video_with_subs.mp4")
+        
+        # Calculate dynamic subtitle styling based on video dimensions with smaller, centered text
+        center_margin = 0  # Center vertically (restored)
+        font_size = max(20, int(height * 0.012))  # Restored to previously working size: at least 20, or 1.2% of video height
+        
+        # Simplified subtitle styling for maximum compatibility and visibility
+        subtitle_style = (
+            f"FontSize={font_size},"
+            f"PrimaryColour=&Hffffff,"  # White text
+            f"OutlineColour=&H000000,"  # Black outline
+            f"Outline=2,"               # Reduced outline thickness
+            f"Alignment=5,"             # Middle center alignment (restored)
+            f"MarginV={center_margin}," # Center margin (restored)
+            f"Bold=1"                   # Bold text
+        )
 
         subtitle_cmd = [
             "ffmpeg",
@@ -1278,7 +1632,7 @@ class VideoGenerator:
             "-i",
             temp_video_path,
             "-vf",
-            f"subtitles={srt_path}:force_style='FontSize=14,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2'",
+            f"subtitles={srt_path}:force_style='{subtitle_style}'",
             "-c:a",
             "copy",
             video_with_subs,
@@ -1357,176 +1711,6 @@ class VideoGenerator:
 
         return output_path
 
-    def generate_video_from_article(
-        self,
-        article: str = None,
-        web_link: str = None,
-        output_path: str = "output_video.mp4",
-        use_gpt_transcript: bool = False,
-        custom_srt_path: str = None,
-        custom_audio_path: str = None,
-        use_blur_background: bool = False,
-        overlay_text: str = "Demo Video",
-        blur_strength: int = 24,
-        aspect_ratio: str = "9:16",
-    ) -> str:
-        """Main function to generate video from article
-
-        Args:
-            article: The article content (optional if custom_srt_path is provided)
-            output_path: Path for the output video
-            use_gpt_transcript: Whether to generate a transcript using GPT first
-            custom_srt_path: Path to custom SRT file (optional)
-            custom_audio_path: Path to custom audio file (optional)
-            use_blur_background: Whether to use blur background effect with repeating pattern
-            overlay_text: Text to overlay on video when using blur background
-            blur_strength: Gaussian blur intensity (default: 24)
-            aspect_ratio: Video aspect ratio - "9:16" for vertical, "16:9" for horizontal
-        """
-        try:
-            # Handle SRT generation or use custom SRT
-            if custom_srt_path and os.path.exists(custom_srt_path):
-                print("Using custom SRT file provided by user...")
-                srt_path = custom_srt_path
-                # Read sentences from SRT for image search
-                sentences = self._extract_sentences_from_srt(custom_srt_path)
-            else:
-                # Need article or web_link for default flow
-                if web_link:
-                    print("Step 0a: Extracting content from web link...")
-                    article = self.extract_web_content(web_link)
-                    print(f"Extracted article length: {len(article)} characters")
-                elif not article:
-                    raise ValueError(
-                        "Either article content or web_link is required when not using custom SRT"
-                    )
-
-                # Optional: Generate transcript from article using GPT
-                if use_gpt_transcript:
-                    print("Step 0b: Generating transcript from article using GPT...")
-                    transcript = self.generate_transcript_from_article(article)
-                    print("Transcript generated successfully")
-                else:
-                    transcript = article
-
-                print("Step 1: Splitting article into sentences...")
-                sentences = self.split_article_into_sentences(transcript)
-                print(f"Found {len(sentences)} sentences")
-                print(article)
-                print(transcript)
-                print(sentences)
-
-            # Handle audio generation or use custom audio
-            if custom_audio_path and os.path.exists(custom_audio_path):
-                print("Using custom audio file provided by user...")
-                audio_path, audio_duration = self.generate_audio(
-                    custom_audio_path=custom_audio_path
-                )
-                print(f"Custom audio duration: {audio_duration:.2f} seconds")
-            else:
-                print("Step 2: Generating audio from text...")
-                # Use the processed transcript for audio generation
-                audio_path, audio_duration = self.generate_audio(
-                    text_for_generation=transcript
-                )
-                print(f"Audio duration: {audio_duration:.2f} seconds")
-
-            # Generate image list script with durations
-            print("Step 3: Generating image list script with durations...")
-            image_script = self.get_image_list_script(transcript, audio_duration) # TODO: image generator script
-            if image_script:
-                print(f"Generated script with {len(image_script)} image descriptions")
-                for i, item in enumerate(image_script):
-                    print(f"  {i+1}. {item['description']} - {item['duration']:.1f}s")
-            else:
-                print("Warning: Failed to generate image script")
-
-            # Generate SRT if not using custom
-            if not custom_srt_path:
-                print("Step 4: Generating SRT file...")
-                srt_path = self.generate_srt_file(sentences, audio_duration)
-                print(f"SRT file created: {srt_path}")
-
-            print("Step 5: Searching for images using vector search...")
-            if image_script:
-                # Use image descriptions from the generated script
-                descriptions = [item["description"] for item in image_script]
-                image_paths = self.vector_search_images(descriptions)
-                print(
-                    f"Found {len([p for p in image_paths if p])} valid images from {len(descriptions)} descriptions"
-                )
-            else:
-                # Fallback to sentences if image script generation failed
-                print("Warning: Using sentences as fallback for image search")
-                image_paths = self.vector_search_images(sentences)
-                print(
-                    f"Found {len([p for p in image_paths if p])} valid images from sentences"
-                )
-
-            print("Step 6: Creating video with FFmpeg...")
-            # Choose video creation method based on blur background setting
-            if use_blur_background:
-                print("🌫️  Using blur background with repeating pattern...")
-                if image_script and len(image_paths) == len(image_script):
-                    # Use blur background with script durations
-                    final_video = self.create_video_with_blur_background(
-                        image_paths,
-                        image_script,
-                        audio_path,
-                        srt_path,
-                        output_path,
-                        audio_duration,
-                        overlay_text,
-                        blur_strength,
-                        aspect_ratio,
-                    )
-                else:
-                    # Create default script for blur background
-                    print("Creating default durations for blur background...")
-                    duration_per_image = audio_duration / len(image_paths) if image_paths else 1.0
-                    default_script = [
-                        {"description": f"image_{i}", "duration": duration_per_image}
-                        for i in range(len(image_paths))
-                    ]
-                    final_video = self.create_video_with_blur_background(
-                        image_paths,
-                        default_script,
-                        audio_path,
-                        srt_path,
-                        output_path,
-                        audio_duration,
-                        overlay_text,
-                        blur_strength,
-                        aspect_ratio,
-                    )
-            else:
-                # Standard video creation without blur background
-                if image_script and len(image_paths) == len(image_script):
-                    # Use the script with durations for video creation
-                    final_video = self.create_video_with_image_script(
-                        image_paths,
-                        image_script,
-                        audio_path,
-                        srt_path,
-                        output_path,
-                        audio_duration,
-                    )
-                else:
-                    # Fallback to original method if script doesn't match
-                    final_video = self.create_video_with_ffmpeg(
-                        image_paths, audio_path, srt_path, output_path, audio_duration
-                    )
-
-            print(f"Video generation completed: {final_video}")
-            return final_video
-
-        except Exception as e:
-            print(f"Error during video generation: {str(e)}")
-            raise
-        finally:
-            # Cleanup temp files if needed
-            pass
-
     def create_video_with_blur_background(
         self,
         image_paths: List[str],
@@ -1539,12 +1723,7 @@ class VideoGenerator:
         blur_strength: int = 24,
         aspect_ratio: str = "9:16",  # "9:16" for vertical, "16:9" for horizontal
     ) -> str:
-        """Create video with blur background effect
-        
-        This method creates a cinematic blur background by:
-        1. Scaling the image to fill the entire frame (eliminating black bars)
-        2. Applying heavy Gaussian blur to the scaled background
-        3. Overlaying the sharp original image centered on top
+        """Create video with blur background effect, custom aspect ratio, and text overlay
         
         Args:
             image_paths: List of image file paths
@@ -1563,7 +1742,7 @@ class VideoGenerator:
         else:
             width, height = 1920, 1080  # Horizontal format (traditional)
         
-        print(f"🎬 Creating video with repeating blur background effect")
+        print(f"🎬 Creating video with blur background effect")
         print(f"📐 Aspect ratio: {aspect_ratio} ({width}x{height})")
         print(f"🌫️  Blur strength: {blur_strength}")
         
@@ -1624,26 +1803,21 @@ class VideoGenerator:
             if valid_script_pairs:
                 f.write(f"file '{valid_script_pairs[-1][0]}'\n")
 
-        print(f"📊 Video timing: {len(valid_script_pairs)} images with repeating blur background")
+        print(f"📊 Video timing: {len(valid_script_pairs)} images with blur background effect")
         print(f"📊 Image total duration: {total_image_duration:.2f}s")
         print(f"📊 Audio duration: {audio_duration:.2f}s")
 
-        # Create main video with repeating blur background effect
+        # Create main video with blur background effect
         temp_video_path = os.path.join(self.temp_dir, "temp_video_blur.mp4")
         
-        # Enhanced filter that creates blur background:
-        # 1. Scale the image to fill the entire frame (no black bars)
-        # 2. Apply heavy blur to the scaled background for cinematic effect
-        # 3. Scale original image to fit within frame while maintaining aspect ratio  
-        # 4. Center the sharp original image on the blurred background
-        
+        # Complex filter that mimics the batch file:
+        # 1. Create blurred background: scale to fill frame, crop, blur
+        # 2. Scale original to fit within frame while maintaining aspect ratio  
+        # 3. Center the original image on the blurred background
         filter_complex = (
-            # Create blurred background by scaling image to fill entire frame
-            f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase[bg_scaled];"
-            f"[bg_scaled]crop={width}:{height}:(iw-ow)/2:(ih-oh)/2,gblur={blur_strength}[blurred];"
-            # Scale original image to fit within frame while maintaining aspect ratio
+            f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},gblur={blur_strength}[blurred];"
             f"[0:v]scale={min(width, height)}:{min(width, height)}:force_original_aspect_ratio=decrease[scaled];"
-            # Composite sharp image over blurred background
             f"[blurred][scaled]overlay=(W-w)/2:(H-h)/2[final]"
         )
 
@@ -1667,7 +1841,7 @@ class VideoGenerator:
             temp_video_path,
         ]
 
-        print("🎬 Executing FFmpeg with repeating blur background effect...")
+        print("🎬 Executing FFmpeg with blur background effect...")
         subprocess.run(ffmpeg_cmd, check=True)
 
         # Handle ending video first (same logic as original methods)
@@ -1734,18 +1908,20 @@ class VideoGenerator:
             subprocess.run(["cp", temp_video_path, temp_concat_video], check=True)
 
         # NOW add subtitles to the final concatenated video
-        # Enhanced subtitle styling positioned at the center of the screen
-        center_margin = 0  # Center vertically
-        font_size = max(12, int(height * 0.008))  # At least 12, or 0.8% of video height
+        # Enhanced subtitle styling positioned at the center of the screen with smaller text
+        # Calculate center margin to position subtitles in the middle
+        center_margin = 0  # Center vertically (restored)
+        # Use much smaller font size for subtle subtitles (90% reduction from original)
+        font_size = max(18, int(height * 0.01))  # Restored to previously working size: at least 18, or 1% of video height
         
-        # Subtitle styling optimized for blur background visibility
+        # Simplified subtitle styling for maximum compatibility and visibility
         subtitle_style = (
             f"FontSize={font_size},"
             f"PrimaryColour=&Hffffff,"  # White text
             f"OutlineColour=&H000000,"  # Black outline
-            f"Outline=3,"               # Thicker outline for better visibility over blur
-            f"Alignment=5,"             # Middle center alignment
-            f"MarginV={center_margin}," # Center margin
+            f"Outline=2,"               # Reduced outline thickness
+            f"Alignment=5,"             # Middle center alignment (restored)
+            f"MarginV={center_margin}," # Center margin (restored)
             f"Bold=1"                   # Bold text
         )
 
@@ -1760,12 +1936,410 @@ class VideoGenerator:
 
         subprocess.run(subtitle_cmd, check=True)
 
-        print(f"✅ Successfully created repeating blur background video: {output_path}")
+        print(f"✅ Successfully created blur background video: {output_path}")
         print(f"📐 Format: {aspect_ratio} ({width}x{height})")
-        print(f"🌫️  Blur background effect applied with strength {blur_strength}")
-        print(f"🔄 Background scaled to fill entire frame ({width}x{height}) with no black bars")
+        print(f"🌫️  Blur effect applied with strength {blur_strength}")
         
         return output_path
+
+    def create_video_from_prepared_data(
+        self,
+        transcript: str,
+        audio_path: str,
+        output_path: str = "output_video.mp4",
+        custom_srt_path: str = None,
+        use_blur_background: bool = False,
+        overlay_text: str = "Demo Video",
+        blur_strength: int = 24,
+        aspect_ratio: str = "9:16",
+    ) -> str:
+        """
+        Create video from already-prepared data (transcript, audio, images)
+        
+        This method does NOT regenerate any content - it uses what was already prepared
+        in the optimization step to create the final video efficiently.
+        
+        Args:
+            transcript: Already generated transcript text
+            audio_path: Path to already generated audio file
+            output_path: Path for the output video
+            custom_srt_path: Path to custom SRT file (optional)
+            use_blur_background: Whether to use blur background effect
+            overlay_text: Text to overlay on video (for blur effect)
+            blur_strength: Blur strength (integer, default 24)
+            aspect_ratio: Video aspect ratio ("9:16" or "16:9")
+            
+        Returns:
+            Path to generated video file
+        """
+        print("🚀 Creating video from prepared data (streamlined process)")
+        print(f"📝 Transcript length: {len(transcript)} characters")
+        print(f"🎵 Audio file: {audio_path}")
+        print(f"📐 Aspect ratio: {aspect_ratio}")
+        
+        # Set dimensions based on aspect ratio
+        if aspect_ratio == "16:9":
+            width, height = 1920, 1080
+        else:  # 9:16 (vertical)
+            width, height = 1080, 1920
+            
+        print(f"📐 Video dimensions: {width}x{height}")
+
+        # Step 1: Get audio duration
+        import librosa
+        audio_duration = librosa.get_duration(path=audio_path)
+        print(f"🎵 Audio duration: {audio_duration:.2f} seconds")
+
+        # Step 2: Generate SRT file from transcript (only if no custom SRT provided)
+        if custom_srt_path:
+            srt_path = custom_srt_path
+            print(f"📄 Using custom SRT: {srt_path}")
+        else:
+            print("Step 2: Generating SRT file from prepared transcript...")
+            # Convert transcript to sentences for SRT generation
+            import re
+            sentences = [s.strip() for s in re.split(r'[.!?]+', transcript) if s.strip()]
+            srt_path = self.generate_srt_file(sentences, audio_duration)
+            print(f"📄 Generated SRT: {srt_path}")
+
+        # Step 3: Use existing image search (this will reuse the same logic but with prepared transcript)
+        print("Step 3: Searching for images using prepared transcript...")
+        
+        # Generate image script for timing
+        try:
+            image_script = self.get_image_list_script(transcript, audio_duration)
+            if image_script:
+                descriptions = [item["description"] for item in image_script]
+                print(f"✓ Using {len(descriptions)} generated image descriptions")
+            else:
+                # Fallback to sentences
+                import re
+                descriptions = [s.strip() for s in re.split(r'[.!?]+', transcript) if s.strip()]
+                print(f"✓ Using {len(descriptions)} sentences as descriptions")
+        except Exception as e:
+            print(f"⚠ Image script generation failed, using sentences: {e}")
+            import re
+            descriptions = [s.strip() for s in re.split(r'[.!?]+', transcript) if s.strip()]
+
+        # Search for images (this is the only unavoidable search since images depend on the final transcript)
+        image_paths = self.vector_search_images(descriptions)
+        
+        # Step 4: Create video
+        print("Step 4: Creating final video...")
+        
+        if use_blur_background and image_script and len(image_paths) == len(image_script):
+            print("🌫️  Creating video with blur background effect...")
+            video_path = self.create_video_with_blur_background(
+                image_paths, image_script, audio_path, srt_path, output_path, 
+                audio_duration, overlay_text, blur_strength, aspect_ratio
+            )
+        elif image_script and len(image_paths) == len(image_script):
+            print("🎬 Creating video with image script timing...")
+            video_path = self.create_video_with_image_script(
+                image_paths, image_script, audio_path, srt_path, output_path, audio_duration
+            )
+        else:
+            print("🎬 Creating video with standard timing...")
+            video_path = self.create_video_with_ffmpeg(
+                image_paths, audio_path, srt_path, output_path, audio_duration
+            )
+        
+        print(f"✅ Video created successfully: {video_path}")
+        return video_path
+
+    def create_video_from_prepared_data_with_images(
+        self,
+        transcript: str,
+        audio_path: str,
+        output_path: str = "output_video.mp4",
+        prepared_image_paths: List[str] = None,
+        prepared_descriptions: List[str] = None,
+        custom_srt_path: str = None,
+        use_blur_background: bool = False,
+        overlay_text: str = "Demo Video",
+        blur_strength: int = 24,
+        aspect_ratio: str = "9:16",
+    ) -> str:
+        """
+        Create video from already-prepared data including prepared image assignments
+        
+        This method uses the exact same images that were shown in the preview,
+        ensuring consistency between preview and final video.
+        
+        Args:
+            transcript: Already generated transcript text
+            audio_path: Path to already generated audio file
+            output_path: Path for the output video
+            prepared_image_paths: List of image paths from the preparation step
+            prepared_descriptions: List of descriptions from the preparation step
+            custom_srt_path: Path to custom SRT file (optional)
+            use_blur_background: Whether to use blur background effect
+            overlay_text: Text to overlay on video (for blur effect)
+            blur_strength: Blur strength (integer, default 24)
+            aspect_ratio: Video aspect ratio ("9:16" or "16:9")
+            
+        Returns:
+            Path to generated video file
+        """
+        print("🚀 Creating video from prepared data with exact image assignments")
+        print(f"📝 Transcript length: {len(transcript)} characters")
+        print(f"🎵 Audio file: {audio_path}")
+        print(f"🖼️  Using {len(prepared_image_paths)} prepared image assignments")
+        print(f"📐 Aspect ratio: {aspect_ratio}")
+        
+        # Set dimensions based on aspect ratio
+        if aspect_ratio == "16:9":
+            width, height = 1920, 1080
+        else:  # 9:16 (vertical)
+            width, height = 1080, 1920
+            
+        print(f"📐 Video dimensions: {width}x{height}")
+
+        # Step 1: Get audio duration
+        import librosa
+        audio_duration = librosa.get_duration(path=audio_path)
+        print(f"🎵 Audio duration: {audio_duration:.2f} seconds")
+
+        # Step 2: Generate SRT file from transcript (only if no custom SRT provided)
+        if custom_srt_path:
+            srt_path = custom_srt_path
+            print(f"📄 Using custom SRT: {srt_path}")
+        else:
+            print("Step 2: Generating SRT file from prepared transcript...")
+            # Convert transcript to sentences for SRT generation
+            import re
+            sentences = [s.strip() for s in re.split(r'[.!?]+', transcript) if s.strip()]
+            srt_path = self.generate_srt_file(sentences, audio_duration)
+            print(f"📄 Generated SRT: {srt_path}")
+
+        # Step 3: Use prepared image assignments (NO SEARCH!)
+        print("Step 3: Using prepared image assignments (no new search)...")
+        image_paths = prepared_image_paths
+        descriptions = prepared_descriptions
+        
+        print(f"✓ Using {len(image_paths)} prepared images")
+        print(f"✓ Using {len(descriptions)} prepared descriptions")
+        
+        # Step 4: Create video with prepared images
+        print("Step 4: Creating final video with prepared images...")
+        
+        # Generate image script for timing (reuse prepared descriptions)
+        try:
+            image_script = self.get_image_list_script(transcript, audio_duration)
+            if image_script and len(image_script) == len(image_paths):
+                print(f"✓ Using {len(image_script)} timed image segments")
+            else:
+                # Fallback: create basic timing from prepared descriptions
+                segment_duration = audio_duration / max(len(descriptions), 1)
+                image_script = []
+                for i, desc in enumerate(descriptions):
+                    image_script.append({
+                        "description": desc,
+                        "duration": segment_duration
+                    })
+                print(f"✓ Using fallback timing: {segment_duration:.2f}s per segment")
+        except Exception as e:
+            print(f"⚠ Image script generation failed, using equal timing: {e}")
+            segment_duration = audio_duration / max(len(descriptions), 1)
+            image_script = []
+            for i, desc in enumerate(descriptions):
+                image_script.append({
+                    "description": desc,
+                    "duration": segment_duration
+                })
+        
+        if use_blur_background and image_script and len(image_paths) == len(image_script):
+            print("🌫️  Creating video with blur background effect...")
+            video_path = self.create_video_with_blur_background(
+                image_paths, image_script, audio_path, srt_path, output_path, 
+                audio_duration, overlay_text, blur_strength, aspect_ratio
+            )
+        elif image_script and len(image_paths) == len(image_script):
+            print("🎬 Creating video with image script timing...")
+            video_path = self.create_video_with_image_script(
+                image_paths, image_script, audio_path, srt_path, output_path, audio_duration
+            )
+        else:
+            print("🎬 Creating video with standard timing...")
+            video_path = self.create_video_with_ffmpeg(
+                image_paths, audio_path, srt_path, output_path, audio_duration
+            )
+        
+        print(f"✅ Video created successfully with prepared images: {video_path}")
+        return video_path
+
+    def generate_video_from_article(
+        self,
+        article: str = None,
+        web_link: str = None,
+        output_path: str = "output_video.mp4",
+        use_gpt_transcript: bool = False,
+        custom_srt_path: str = None,
+        custom_audio_path: str = None,
+        use_blur_background: bool = False,
+        overlay_text: str = "Demo Video",
+        blur_strength: int = 24,
+        aspect_ratio: str = "9:16",
+    ) -> str:
+        """Main function to generate video from article
+
+        Args:
+            article: The article content (optional if custom_srt_path is provided)
+            output_path: Path for the output video
+            use_gpt_transcript: Whether to generate a transcript using GPT first
+            custom_srt_path: Path to custom SRT file (optional)
+            custom_audio_path: Path to custom audio file (optional)
+            use_blur_background: Whether to use blur background effect
+            overlay_text: Text to overlay on video (when using blur background)
+            blur_strength: Gaussian blur strength for background (default: 24)
+            aspect_ratio: Video aspect ratio - "9:16" for vertical, "16:9" for horizontal
+        """
+        try:
+            # Handle SRT generation or use custom SRT
+            if custom_srt_path and os.path.exists(custom_srt_path):
+                print("Using custom SRT file provided by user...")
+                srt_path = custom_srt_path
+                # Read sentences from SRT for image search
+                sentences = self._extract_sentences_from_srt(custom_srt_path)
+            else:
+                # Need article or web_link for default flow
+                if web_link:
+                    print("Step 0a: Extracting content from web link...")
+                    article = self.extract_web_content(web_link)
+                    print(f"Extracted article length: {len(article)} characters")
+                elif not article:
+                    raise ValueError(
+                        "Either article content or web_link is required when not using custom SRT"
+                    )
+
+                # Optional: Generate transcript from article using GPT
+                if use_gpt_transcript:
+                    print("Step 0b: Generating transcript from article using GPT...")
+                    transcript = self.generate_transcript_from_article(article)
+                    print("Transcript generated successfully")
+                else:
+                    transcript = article
+
+                print("Step 1: Splitting article into sentences...")
+                sentences = self.split_article_into_sentences(transcript)
+                print(f"Found {len(sentences)} sentences")
+                print(article)
+                print(transcript)
+                print(sentences)
+
+            # Handle audio generation or use custom audio
+            if custom_audio_path and os.path.exists(custom_audio_path):
+                print("Using custom audio file provided by user...")
+                audio_path, audio_duration = self.generate_audio(
+                    custom_audio_path=custom_audio_path
+                )
+                print(f"Custom audio duration: {audio_duration:.2f} seconds")
+            else:
+                print("Step 2: Generating audio from text...")
+                # Use the processed transcript for audio generation
+                audio_path, audio_duration = self.generate_audio(
+                    text_for_generation=transcript
+                )
+                print(f"Audio duration: {audio_duration:.2f} seconds")
+
+            # Generate image list script with durations
+            print("Step 3: Generating image list script with durations...")
+            image_script = self.get_image_list_script(transcript, audio_duration)
+            if image_script:
+                print(f"Generated script with {len(image_script)} image descriptions")
+                for i, item in enumerate(image_script):
+                    print(f"  {i+1}. {item['description']} - {item['duration']:.1f}s")
+            else:
+                print("Warning: Failed to generate image script")
+
+            # Generate SRT if not using custom
+            if not custom_srt_path:
+                print("Step 4: Generating SRT file...")
+                srt_path = self.generate_srt_file(sentences, audio_duration)
+                print(f"SRT file created: {srt_path}")
+
+            print("Step 5: Searching for images using vector search...")
+            if image_script:
+                # Use image descriptions from the generated script
+                descriptions = [item["description"] for item in image_script]
+                image_paths = self.vector_search_images(descriptions)
+                print(
+                    f"Found {len([p for p in image_paths if p])} valid images from {len(descriptions)} descriptions"
+                )
+            else:
+                # Fallback to sentences if image script generation failed
+                print("Warning: Using sentences as fallback for image search")
+                image_paths = self.vector_search_images(sentences)
+                print(
+                    f"Found {len([p for p in image_paths if p])} valid images from sentences"
+                )
+
+            print("Step 6: Creating video with FFmpeg...")
+            # Choose video creation method based on options
+            if use_blur_background:
+                print("🌫️  Using blur background effect for video creation...")
+                if image_script and len(image_paths) == len(image_script):
+                    final_video = self.create_video_with_blur_background(
+                        image_paths,
+                        image_script,
+                        audio_path,
+                        srt_path,
+                        output_path,
+                        audio_duration,
+                        overlay_text,
+                        blur_strength,
+                        aspect_ratio,
+                    )
+                else:
+                    # Create basic image script for blur background
+                    print("Creating basic image script for blur background...")
+                    duration_per_image = audio_duration / len(image_paths)
+                    basic_script = [{"description": f"image_{i}", "duration": duration_per_image} 
+                                  for i in range(len(image_paths))]
+                    final_video = self.create_video_with_blur_background(
+                        image_paths,
+                        basic_script,
+                        audio_path,
+                        srt_path,
+                        output_path,
+                        audio_duration,
+                        overlay_text,
+                        blur_strength,
+                        aspect_ratio,
+                    )
+            elif image_script and len(image_paths) == len(image_script):
+                # Use the script with durations for video creation
+                final_video = self.create_video_with_image_script(
+                    image_paths,
+                    image_script,
+                    audio_path,
+                    srt_path,
+                    output_path,
+                    audio_duration,
+                    aspect_ratio,
+                )
+            else:
+                # Fallback to original method if script doesn't match
+                final_video = self.create_video_with_ffmpeg(
+                    image_paths, audio_path, srt_path, output_path, audio_duration
+                )
+
+            # Collect image preview information
+            image_previews = self._collect_image_previews(image_paths, image_script if image_script else sentences)
+            
+            print(f"Video generation completed: {final_video}")
+            return {
+                "video_path": final_video,
+                "image_previews": image_previews,
+                "total_images": len([p for p in image_paths if p])
+            }
+
+        except Exception as e:
+            print(f"Error during video generation: {str(e)}")
+            raise
+        finally:
+            # Cleanup temp files if needed
+            pass
 
     def cleanup(self):
         """Clean up temporary files"""
@@ -1790,12 +2364,12 @@ def main():
     才能在快速變化的金融市場中保持競爭力。
     """
     fixed_article = """
-    Today's portfolio underperformance reflects a temporary misalignment between expectations and realized earnings momentum across our cyclical long positions. CCL (-2.35%) and FDX (-2.86%) underperformed broader market declines (-1.64%), underscoring their sensitivity to short-term demand fluctuations. ORLY's modest gain (+0.81%) provided limited balance, while PNW (+0.07%), our defensive short, failed to deliver sufficient downside protection due to stagnant movement in utility valuations. This highlights the importance of refining risk-parity mechanisms to manage unhedged exposure during volatile macro conditions.
-    The strategy continues to exhibit strong long-term performance metrics—241.70% annualized returns with a Sharpe ratio of 16.48—validating our systematic approach. However, today's results emphasize that even high-probability strategies face episodic dislocations, particularly when assumption-driven trades encounter unexpected macroeconomic noise. Consistent diversification beyond cyclical sectors will be critical to reduce drawdowns and sustain our edge.
-    The current market environment remains stable but fragile, with growth-oriented cyclicals facing decelerating post-recovery momentum. Continued earnings revisions and analyst expectation gaps within consumer-sensitive sectors suggest opportunity, but these must be weighed against mounting uncertainty in macro policy signals and demand elasticity. A more robust hedge across non-cyclical, defensive sectors may enhance resilience.
-    Our holdings reflect a deliberate focus on earnings revision momentum and analyst expectation gaps. Long positions in CCL and FDX are based on anticipated topline recovery tied to macro reopening tailwinds, while ORLY brings strong fundamental relative valuation. PNW, our short, challenges overvalued defensive utilities, balancing exposure. These decisions are rooted in systematic valuation frameworks, though current execution reveals gaps in macro overlay calibration.
-    As always, designing around the system requires constant iteration. Most risks lie in assumptions we mistakenly deem certain—a principle that today reinforces. Diversification remains the only true free lunch.
-    """
+   The stars have always guided us… but what if they could speak directly to you?
+Meet Astro — your personal AI astrologer, combining ancient wisdom with cutting-edge technology.
+
+Astro analyzes your unique birth chart in seconds, offering insights on love, career, and personal growth tailored just for you. No generic horoscopes here — every prediction, every piece of guidance is based on your personal cosmic blueprint. With 24/7 access, Astro learns your patterns, answers your questions, and helps you navigate life’s big decisions in real time.
+
+Whether you’re seeking clarity, confidence, or just a little magic, Astro is here to illuminate your path. The universe is talking. Are you ready to listen? Visit Astro.ai and start your journey today.    """
 
     # Initialize video generator (will use environment variables for Pinecone)
     generator = VideoGenerator()
@@ -1803,28 +2377,27 @@ def main():
     try:
         # custom_audio = "data/media/somer_smaple.wav"
         # Example 1: Generate audio from text using API
-        # print("=== Example 1: Generate audio from text ===")
-        # output_file = generator.generate_video_from_article(
-        #     # web_link="https://www.taaze.tw/products/11101058474.html",
-        #     article=fixed_article,
-        #     use_gpt_transcript=True,
-        #     output_path="pre-market.mp4",
-        #     custom_srt_path=None,
-        #     custom_audio_path=None,  # Will use API to generate audio
-        # )
-        # print(f"Success! Video with generated audio saved to: {output_file}")
-
-        print("=== Example 2: Generate audio from text ===")
+        print("=== Example 1: Generate audio from text ===")
         output_file = generator.generate_video_from_article(
-            web_link="https://www.taaze.tw/products/11101058474.html",
-            # article=fixed_article,
+            # web_link="https://www.taaze.tw/products/11101058474.html",
+            article=fixed_article,
             use_gpt_transcript=True,
-            output_path="book_video.mp4",
-            use_blur_background=True,
+            output_path="New_pre-market.mp4",
             custom_srt_path=None,
             custom_audio_path=None,  # Will use API to generate audio
         )
         print(f"Success! Video with generated audio saved to: {output_file}")
+
+        # print("=== Example 2: Generate audio from text ===")
+        # output_file = generator.generate_video_from_article(
+        #     web_link="https://www.taaze.tw/products/11101058474.html",
+        #     # article=fixed_article,
+        #     use_gpt_transcript=True,
+        #     output_path="book_video.mp4",
+        #     custom_srt_path=None,
+        #     custom_audio_path=None,  # Will use API to generate audio
+        # )
+        # print(f"Success! Video with generated audio saved to: {output_file}")
 
 
         # Example 3: Use custom audio file (if available)

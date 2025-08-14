@@ -19,7 +19,11 @@ from datetime import datetime
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
 
-prompt_621 = " Create a JSON format image prompt for FluxDev. Category： Fantasy Novel. Sub-category：Adventure, Realistic and high quality, professional. define the camera and lens used. Define the lighting and scene structure. Be cinematic and creative. Be creative, abstract representation, no computer screens. "
+# Generic image generation prompt - no hardcoded categories
+GENERIC_IMAGE_PROMPT = """Create a detailed image prompt for FluxDev based on the provided description. 
+Be creative and visually compelling while staying true to the content description. 
+Include specific details like camera angles, lighting conditions, visual style, and composition. 
+Generate a still image with no motion. Make the prompt detailed and descriptive."""
 
 
 load_dotenv()
@@ -48,7 +52,7 @@ def generate_image_prompt_fun(description:str) -> str:
     )
     generate_first_prompt_template = ChatPromptTemplate.from_messages(
         [
-            ("system", prompt_621),
+            ("system", GENERIC_IMAGE_PROMPT),
             ("user", "Specific scene description: {description}")
         ]
     )
@@ -79,10 +83,10 @@ def call_image_request_function(prompt: str, path_name:str) -> Optional[str]:
         # ComfyUI 的 API 端點
 
         # COMFY_URL = "http://localhost:8000/" # TODO: 改成要用的url，格式：https://da07-185-219-141-17.ngrok-free.app/api/prompt
-        COMFY_URL = "https://6e0bf634b876.ngrok-free.app/api/prompt"
+        COMFY_URL = "https://7fd6781ec07e.ngrok-free.app/api/prompt"
         if COMFY_URL:
             workflow_path = [
-                "workflows/TaggedExport.json",
+                "workflows/KreaGen.json",
             ]
             # 隨機選擇一個 workflow_path
             selected_path = random.choice(workflow_path)
@@ -109,6 +113,14 @@ def call_image_request_function(prompt: str, path_name:str) -> Optional[str]:
                         # Disable tagger-based filename keys to prevent tags in filename
                         if "filename_keys" in node["inputs"]:
                             node["inputs"]["filename_keys"] = ""  # Remove tagger reference from filename
+
+                # Support core SaveImage node by setting subfolder/filename_prefix
+                if node.get("class_type") == "SaveImage":
+                    if "inputs" in node:
+                        if "subfolder" in node["inputs"]:
+                            node["inputs"]["subfolder"] = path_name
+                        if "filename_prefix" in node["inputs"]:
+                            node["inputs"]["filename_prefix"] = f"{path_name}/{path_name}_%F_%H-%M-%S"
             
             print(f"Processing workflow with prompt length: {len(prompt)} characters")
             print(f"Output folder: {path_name}")
@@ -165,7 +177,7 @@ def get_tags_and_file_info_from_comfy_history(prompt_id: str, max_attempts: int 
     """
     try:
         # Extract base URL from COMFY_URL
-        COMFY_URL = "https://6e0bf634b876.ngrok-free.app/api/prompt"
+        COMFY_URL = "https://7fd6781ec07e.ngrok-free.app/api/prompt"
         base_url = COMFY_URL.replace("/api/prompt", "")
         history_url = f"{base_url}/history/{prompt_id}"
         
@@ -570,10 +582,65 @@ def batch_generate_images(num_images: int = 10, append_to_file: str = None, them
         "Diamond mine shaft descending into darkness with promise of riches"
     ]
     
+    astrology_scenarios = [
+        "Aries constellation with ram symbolism and fire elements",
+        "Taurus constellation with bull imagery and earth elements", 
+        "Gemini constellation with twin symbolism and air elements",
+        "Cancer constellation with crab imagery and water elements",
+        "Leo constellation with lion symbolism and fire elements",
+        "Virgo constellation with maiden imagery and earth elements",
+        "Libra constellation with scales symbolism and air elements", 
+        "Scorpio constellation with scorpion imagery and water elements",
+        "Sagittarius constellation with archer symbolism and fire elements",
+        "Capricorn constellation with goat imagery and earth elements",
+        "Aquarius constellation with water bearer symbolism and air elements",
+        "Pisces constellation with fish imagery and water elements",
+        "Solar eclipse with mystical astrological significance",
+        "Lunar eclipse with celestial astrological meaning",
+        "Mercury retrograde with cosmic communication effects",
+        "Venus transit with love and beauty astrological influence",
+        "Mars opposition with warrior energy and conflict",
+        "Jupiter conjunction with expansion and abundance",
+        "Saturn return with life lessons and transformation",
+        "Uranus square with sudden change and revolution",
+        "Neptune trine with dreams and spiritual awakening",
+        "Pluto transformation with death and rebirth cycles",
+        "Full moon in different zodiac signs with ritual significance",
+        "New moon manifestation with astrological timing",
+        "Planetary alignment with cosmic significance",
+        "Astrological birth chart with natal planet positions",
+        "Tarot cards combined with astrological symbolism",
+        "Crystal formations aligned with zodiac energies",
+        "Sacred geometry patterns reflecting celestial movements",
+        "Astrological houses with life theme representations",
+        "Elemental balance of fire, earth, air, water signs",
+        "Cardinal, fixed, mutable sign energy expressions",
+        "Astrological aspects and angular relationships",
+        "Celestial bodies in retrograde motion effects",
+        "Zodiac wheel with seasonal and temporal divisions",
+        "Astrological transits and their life influences",
+        "Lunar phases and their emotional significance",
+        "Solar return charts and annual cycles",
+        "Composite charts and relationship astrology",
+        "Progressed charts and life evolution timing",
+        "Astrological remedies and healing practices",
+        "Vedic astrology with Eastern philosophical elements",
+        "Chinese astrology with animal year symbolism",
+        "Mayan astrology with calendar and cosmic cycles",
+        "Celtic astrology with tree and nature symbolism",
+        "Egyptian astrology with deity and pyramid imagery",
+        "Babylonian astrology with ancient wisdom traditions",
+        "Modern psychological astrology with therapeutic themes",
+        "Evolutionary astrology with soul purpose exploration",
+        "Electional astrology with optimal timing selection"
+    ]
+    
     if theme == "magical_quest":
         fantasy_scenarios = magical_quest_scenarios
     elif theme == "epic_battle":
         fantasy_scenarios = epic_battle_scenarios
+    elif theme == "astrology":
+        fantasy_scenarios = astrology_scenarios
     else:
         fantasy_scenarios = fantasy_adventure_scenarios
     
@@ -694,4 +761,4 @@ def batch_generate_images(num_images: int = 10, append_to_file: str = None, them
 
 if __name__ == "__main__":
     # 批量生成50張fantasy_adventure主題圖片，創建新文件
-    batch_generate_images(50, append_to_file=None, theme="fantasy_adventure")
+    batch_generate_images(50, append_to_file=None, theme="astrology")

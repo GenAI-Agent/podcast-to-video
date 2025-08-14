@@ -7,3 +7,4 @@ __pycache__
 __init__.py
 .venv
 /temp
+/generated_videos
