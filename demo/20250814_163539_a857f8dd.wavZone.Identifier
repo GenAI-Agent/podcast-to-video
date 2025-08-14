@@ -1,0 +1,4 @@
+[ZoneTransfer]
+ZoneId=3
+ReferrerUrl=https://audio.ask-lens.ai/
+HostUrl=https://lens-audio.s3.ap-northeast-1.amazonaws.com/audio/cmebmeqqv0064dt0tr3ln7uaq/20250814_163539_a857f8dd.wav?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAWQUOZVKBUNHST543%2F20250814%2Fap-northeast-1%2Fs3%2Faws4_request&X-Amz-Date=20250814T163549Z&X-Amz-Expires=900&X-Amz-Signature=3b4ec22c0ab158f6da333c49020efc191d62627d937c095b95608a4a46506eaf&X-Amz-SignedHeaders=host&response-content-disposition=attachment%3B%20filename%3D%2220250814_163539_a857f8dd.wav%22&x-amz-checksum-mode=ENABLED&x-id=GetObject
